@@ -1,0 +1,141 @@
+# Script to find/disable/delete Azure AD Stale Devices
+
+# Parameters
+
+param(
+	 [Parameter(Mandatory=$false)]
+	 [Int] $maxAge = 365,
+
+	 [Parameter(Mandatory=$false)]
+	 [string] $Sent_mail_to = "emailadres",
+
+	 [Boolean] $Disable_Device = $false,
+
+	 [Boolean] $Delete_Device = $false
+)
+
+$login = Get-AutomationPSCredential -Name 'automation_account'
+$O365CredentialName = "sent_mail_account"
+$OfficeCred = Get-AutomationPSCredential -Name $O365CredentialName
+$Subject = "Report_azure_AD_devices"
+$Body = "<h2>See CSV File<h2>"
+
+
+# Connect to Azure AD and find stale devices
+
+Connect-AzureAD -Credential $login
+
+# Disable the devices
+
+If ($Disable_Device)
+{
+ $staleDevices = Get-AzureADDevice -All $true | Where-Object {$_.ApproximateLastLogonTimestamp -le (Get-Date).AddDays(-$maxAge)}
+
+ foreach ($Device in $staleDevices) {
+ Set-AzureADDevice -ObjectId $Device.ObjectId -AccountEnabled $false
+ 
+ # Output the device to the console
+       Write-Output "Disabled device $($device.DisplayName)"
+    }
+}
+
+Start-Sleep -Seconds 10 # needed for sure that the new results are aivaliable in the csv file
+
+# Delete the devices
+
+If ($Delete_Device)
+{
+ $staleDevices = Get-AzureADDevice -All $true | Where-Object {$_.ApproximateLastLogonTimestamp -le (Get-Date).AddDays(-$maxAge)}
+
+ foreach ($Device in $staleDevices) {
+ Remove-AzureADDevice -ObjectId $Device.ObjectId
+ 
+ # Output the device to the console
+       Write-Output "Removed device $($device.DisplayName)"
+    }
+}
+
+Start-Sleep -Seconds 10 # needed for sure that the new results are aivaliable in the csv file
+
+If ($Sent_mail_to)
+{
+ # Store the new results in a PowerShell object for the CSV file
+
+ $staleDevices_report = Get-AzureADDevice -All $true | Where-Object {$_.ApproximateLastLogonTimestamp -le (Get-Date).AddDays(-$maxAge)}
+
+
+ $output = @()
+ foreach ($device in $staleDevices_report) {
+    $properties = @{
+        DisplayName = $device.DisplayName
+        Id = $device.ObjectId
+        ApproximateLastLogonTimestamp = $device.ApproximateLastLogonTimestamp
+        DeviceOSType = $device.DeviceOSType
+        AccountEnabled = $device.AccountEnabled
+    }
+    $output += New-Object PSObject -Property $properties
+ }
+
+ $attachment = New-Item Stale_devices_report.csv -ItemType file
+
+ #Export data to for csv file
+ $output | Export-Csv -Encoding UTF8 -Path $attachment
+
+
+ # Sent mail script
+ Send-MailMessage -Credential $OfficeCred -Attachments $attachment -SmtpServer smtp.office365.com -Port 587 -UseSsl -From $O365CredentialName -To $Sent_mail_to -Subject $Subject -Body $Body -BodyAsHtml
+ Remove-Item $attachment
+ $attachment = $null
+}
+
+# Sent mail via graph api when basic auth is disabled
+
+<# App registration is needed
+
+$clientId = "xxx"
+$clientSecret = "xxx"
+$tenantId = "xxx"
+
+$Mailsender = "send_adress"
+
+#Connect to GRAPH API
+$tokenBody = @{
+    Grant_Type    = "client_credentials"
+    Scope         = "https://graph.microsoft.com/.default"
+    Client_Id     = $clientId
+    Client_Secret = $clientSecret
+}
+$tokenResponse = Invoke-RestMethod -Uri "https://login.microsoftonline.com/$tenantID/oauth2/v2.0/token" -Method POST -Body $tokenBody
+$headers = @{
+    "Authorization" = "Bearer $($tokenResponse.access_token)"
+    "Content-type"  = "application/json"
+}
+
+#Send Mail    
+$URLsend = "https://graph.microsoft.com/v1.0/users/$MailSender/sendMail"
+$BodyJsonsend = @"
+                    {
+                        "message": {
+                          "subject": "Hello World from Microsoft Graph API",
+                          "body": {
+                            "contentType": "HTML",
+                            "content": "This Mail is sent via Microsoft <br>
+                            GRAPH <br>
+                            API<br>
+                            
+                            "
+                          },
+                          "toRecipients": [
+                            {
+                              "emailAddress": {
+                                "address": "example@domain.com"
+                              }
+                            }
+                          ]
+                        },
+                        "saveToSentItems": "true"
+                      }
+"@
+
+Invoke-RestMethod -Method POST -Uri $URLsend -Headers $headers -Body $BodyJsonsend
+#>
