@@ -1,5 +1,5 @@
 # Azure_Automation
-PowerShell runbooks in Azure
+Runbooks based on PowerShell
 
 
 Script to find/disable/delete Azure AD Stale Devices
