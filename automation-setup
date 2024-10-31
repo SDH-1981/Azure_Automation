@@ -1,0 +1,293 @@
+#################################################################################################################
+#                                                                                                               #
+#  ██████╗░░█████╗░░█████╗░███╗░░██╗███╗░░██╗  ██╗░█████╗░████████╗                                             #
+#  ██╔══██╗██╔══██╗██╔══██╗████╗░██║████╗░██║  ██║██╔══██╗╚══██╔══╝                                             #
+#  ██████╦╝██║░░╚═╝██║░░██║██╔██╗██║██╔██╗██║  ██║██║░░╚═╝░░░██║░░░                                             #
+#  ██╔══██╗██║░░██╗██║░░██║██║╚████║██║╚████║  ██║██║░░██╗░░░██║░░░                                             #
+#  ██████╦╝╚█████╔╝╚█████╔╝██║░╚███║██║░╚███║  ██║╚█████╔╝░░░██║░░░                                             #  
+#  ╚═════╝░░╚════╝░░╚════╝░╚═╝░░╚══╝╚═╝░░╚══╝  ╚═╝░╚════╝░░░░╚═╝░░░                                             #  
+#                                                                                                               #
+#################################################################################################################
+# Created by:  Stefan de Heus | Bconn ICT | Masterscript Infra as code | Automations ENV AZURE                  #
+# Created date: 02/10/2023                                                                                      #
+# Last modified date:                                                                                           #
+# Notes:                                                                                                        #      
+# Last change:                                                                                                  #     
+#                                                                                                               #
+#################################################################################################################
+
+# Params
+
+$ResourceGroupName = "RG-Automation-20"   
+$Location = "North Europe"
+
+# Connect to Azure Via Principal
+#####
+
+# Function to add a message to the logfile
+
+Function Add-LogMessage()
+{
+    param
+    (
+        [Parameter(Mandatory=$true)] [string] $Message
+    )
+
+    Try {
+        # Definieer het pad van het logbestand
+        $LogFile = "C:\Temp\log.txt"
+
+        # Maak de directory aan als deze niet bestaat
+        If (-not (Test-Path -Path "C:\Temp")) {
+            New-Item -ItemType Directory -Path "C:\Temp"
+        }
+
+        # Voeg inhoud toe aan het logbestand
+        $TimeStamp = (Get-Date).toString("dd/MM/yyyy HH:mm:ss:fff tt")
+        $Line = "$TimeStamp - $Message"
+        Add-Content -Path $LogFile -Value $Line
+
+        Write-Host "Message: '$Message' Has been Logged to File: $LogFile"
+    }
+    Catch {
+        Write-Host -ForegroundColor Red "Error:" $_.Exception.Message
+    }
+}
+
+# Start timer
+
+$scriptStartTime = Get-Date
+
+# Connection to Azure
+
+Add-LogMessage "Connecting to Azure..."
+Try {
+    Connect-AzAccount -ServicePrincipal -Credential $Credential -Tenant $TenantId
+    Add-LogMessage "Connected to Azure successfully."
+} Catch {
+    $errorMessage = "Failed to connect to Azure: $_"
+    Add-LogMessage $errorMessage
+    Exit 1
+}
+
+# Create ResourceGroup
+
+Add-LogMessage "Creating Resource Group..."
+Try {
+    New-AzResourceGroup -Name $ResourceGroupName -Location $Location
+    Add-LogMessage "Resource Group '$ResourceGroupName' created successfully."
+} Catch {
+    $errorMessage = "Failed to create Resource Group: $_"
+    Add-LogMessage $errorMessage
+    Exit 1
+}
+
+Start-Sleep -Seconds 20
+
+# Automation Accounts to be created
+
+$AutomationAccountNames = @("Azure1Automation", "ExchangeAutomation", "SharePointAutomation", "TestAutomation")
+
+# Create Automation Accounts
+
+foreach ($AutomationAccountName in $AutomationAccountNames) {
+    Add-LogMessage "Creating Automation Account '$AutomationAccountName'..."
+    Try {
+        New-AzAutomationAccount -ResourceGroupName $ResourceGroupName -Name $AutomationAccountName -Location $Location -AssignSystemIdentity
+        Add-LogMessage "Automation Account '$AutomationAccountName' created successfully."
+    } Catch {
+        $errorMessage = "Failed to create Automation Account '$AutomationAccountName': $_"
+        Add-LogMessage $errorMessage
+        Exit 1
+    }
+}
+
+# Import PowerShell Modules
+
+$moduleNames = @(
+    "ExchangeOnlineManagement",
+    "PnP.PowerShell",
+    "AzureAD",
+    "MicrosoftTeams"
+)
+
+# Runtime version for PowerShell 7.2
+
+$runtimeVersion = "7.2"
+
+foreach ($AutomationAccountName in $AutomationAccountNames) {
+    ForEach ($moduleName in $moduleNames) {
+        Add-LogMessage "Importing module '$moduleName' into '$AutomationAccountName'..."
+        $contentLinkUri = "https://www.powershellgallery.com/api/v2/package/$moduleName"
+        $moduleVersion = "latest" # Je kunt specifieke versies instellen indien gewenst
+
+        Try {
+            New-AzAutomationModule -AutomationAccountName $AutomationAccountName `
+                                   -ResourceGroupName $ResourceGroupName `
+                                   -Name $moduleName `
+                                   -ContentLinkUri $contentLinkUri `
+                                   -RuntimeVersion $runtimeVersion
+            Add-LogMessage "Module '$moduleName' imported successfully into '$AutomationAccountName'."
+
+            # Wacht (300 seconden) voor installatie van Microsoft.Graph.Authentication module
+            if ($moduleName -eq "Microsoft.Graph.Authentication") {
+                Start-Sleep -Seconds 300
+            }
+        } Catch {
+            $errorMessage = "Failed to import module '$moduleName' into '$AutomationAccountName': $_"
+            Add-LogMessage $errorMessage
+        }
+    }
+}
+
+#################################################################################################################
+# Setup managed identity's for the automation accounts                                                          #
+#################################################################################################################
+
+
+# Converteer de client secret naar een SecureString
+$secureClientSecret = ConvertTo-SecureString $Secret -AsPlainText -Force
+
+# Maak een nieuwe MSAL client applicatie
+$app = New-MsalClientApplication -ClientId $ApplicationId -ClientSecret $secureClientSecret -TenantId $tenantId
+
+# Verkrijg een token met de juiste scopes
+$token = Get-MsalToken -ClientId $ApplicationId -ClientSecret $secureClientSecret -TenantId $tenantId -Scopes "https://graph.microsoft.com/.default"
+
+# Haal het access token op
+$accessToken = $token.AccessToken
+
+# Verbind met Microsoft Graph met behulp van het access token
+Connect-MgGraph -AccessToken $accessToken
+
+
+
+
+Select-MgProfile Beta
+
+# Definieer de namen van de automation accounts en hun respectievelijke rechten
+$automationAccounts = @{
+    'Azure1Automation' = @{
+        GraphScopes = @(
+            'UserAuthenticationMethod.Read.All',
+            'Group.ReadWrite.All'
+        )
+        SpoScopes = @(
+            'Sites.FullControl.All'
+        )
+        ExchangeRole = 'Manage Exchange As Application'
+        AdminRole = $null
+    }
+    'ExchangeAutomation' = @{
+        GraphScopes = @(
+            'Mail.Send'
+        )
+        SpoScopes = @(
+            'User.ReadWrite.All'
+        )
+        ExchangeRole = 'Manage Exchange As Application'
+        AdminRole = 'Exchange Administrator'
+    }
+    'SharePointAutomation' = @{
+        GraphScopes = @(
+            'Directory.Read.All'
+        )
+        SpoScopes = @(
+            'TermStore.ReadWrite.All'
+        )
+        ExchangeRole = $null
+        AdminRole = $null
+    }
+    'TestAutomation' = @{
+        GraphScopes = @(
+            'User.ReadWrite.All',
+            'TeamSettings.Read.All'
+        )
+        SpoScopes = @(
+            'Sites.FullControl.All',
+            'User.ReadWrite.All'
+        )
+        ExchangeRole = $null
+        AdminRole = $null
+    }
+}
+
+foreach ($AutomationAccountName in $automationAccounts.Keys) {
+    $accountDetails = $automationAccounts[$AutomationAccountName]
+
+    # Get the service principal of the automation account
+    $managedIdentityId = (Get-MgServicePrincipal -Filter "displayName eq '$AutomationAccountName'").id
+
+    Write-host "Adding Microsoft Graph Permissions for $AutomationAccountName" -ForegroundColor Cyan
+
+    # Adding Microsoft Graph permissions
+    $graphApp = Get-MgServicePrincipal -Filter "AppId eq '00000003-0000-0000-c000-000000000000'"
+
+    foreach ($scope in $accountDetails.GraphScopes) {
+        $appRole = $graphApp.AppRoles | Where-Object {$_.Value -eq $scope}
+
+        if ($null -eq $appRole) { Write-Warning "Unable to find App Role for scope $scope"; continue; }
+
+        # Check if permissions isn't already assigned
+        $assignedAppRole = Get-MgServicePrincipalAppRoleAssignment -ServicePrincipalId $managedIdentityId | Where-Object { $_.AppRoleId -eq $appRole.Id -and $_.ResourceDisplayName -eq "Microsoft Graph" }
+
+        if ($null -eq $assignedAppRole) {
+            New-MgServicePrincipalAppRoleAssignment -PrincipalId $managedIdentityId -ServicePrincipalId $managedIdentityId -ResourceId $graphApp.Id -AppRoleId $appRole.Id
+        } else {
+            write-host "Scope $scope already assigned"
+        }
+    }
+
+    # Adding SharePoint Online Permissions if defined
+    if ($accountDetails.SpoScopes) {
+        Write-host "Adding SharePoint Online Permissions for $AutomationAccountName" -ForegroundColor Cyan
+
+        $spoApp = Get-MgServicePrincipal -Filter "AppId eq '00000003-0000-0ff1-ce00-000000000000'"
+
+        foreach ($scope in $accountDetails.SpoScopes) {
+            $appRole = $spoApp.AppRoles | Where-Object {$_.Value -eq $scope}
+
+            if ($null -eq $appRole) { Write-Warning "Unable to find App Role for scope $scope"; continue; }
+
+            # Check if permissions isn't already assigned
+            $assignedAppRole = Get-MgServicePrincipalAppRoleAssignment -ServicePrincipalId $managedIdentityId | Where-Object { $_.AppRoleId -eq $appRole.Id -and $_.ResourceDisplayName -eq "Office 365 SharePoint Online"}
+
+            if ($null -eq $assignedAppRole) {
+                New-MgServicePrincipalAppRoleAssignment -PrincipalId $managedIdentityId -ServicePrincipalId $managedIdentityId -ResourceId $spoApp.Id -AppRoleId $appRole.Id
+            } else {
+                write-host "Scope $scope already assigned"
+            }
+        }
+    }
+
+    # Adding Exchange Online permissions if defined
+    if ($accountDetails.ExchangeRole) {
+        Write-host "Adding Exchange Online Permissions for $AutomationAccountName" -ForegroundColor Cyan
+
+        $exoApp = Get-MgServicePrincipal -Filter "AppId eq '00000002-0000-0ff1-ce00-000000000000'"
+        $appRole = $exoApp.AppRoles | Where-Object {$_.DisplayName -eq $accountDetails.ExchangeRole}
+
+        $AppRoleAssignment = @{
+            "PrincipalId" = $managedIdentityId
+            "ServicePrincipalId" = $managedIdentityId
+            "ResourceId" = $exoApp.Id
+            "AppRoleId" = $appRole.Id
+        }
+        New-MgServicePrincipalAppRoleAssignment @AppRoleAssignment
+    }
+
+    # Add Administrator Role if defined
+    if ($accountDetails.AdminRole) {
+        $roleId = (Get-MgRoleManagementDirectoryRoleDefinition -Filter "DisplayName eq 'Exchange Administrator'").id
+        New-MgRoleManagementDirectoryRoleAssignment -PrincipalId $managedIdentityId -RoleDefinitionId $roleId -DirectoryScopeId "/"
+    }
+}
+
+
+# Stop timer
+$scriptEndTime = Get-Date
+$scriptDuration = $scriptEndTime - $scriptStartTime
+$scriptDurationMinutes = [math]::Round($scriptDuration.TotalMinutes, 2)
+
+# Log total duration
+Add-LogMessage "Total script execution time: $scriptDurationMinutes minutes"
